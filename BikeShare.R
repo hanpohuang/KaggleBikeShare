@@ -260,3 +260,468 @@ kaggle.plr.5 <- mypreds5 %>%
   mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
 
 vroom_write(x=kaggle.plr.5, file="./kaggle_plr_5.csv", delim=",")
+
+
+## Tuning (finding optimal penalyty and mixture)
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Data Cleaning
+train.t <- train |>
+  select(-c(registered, casual)) |>
+  mutate(
+    log_count = log(count)
+  ) |>
+  select(-count)
+
+# recipe
+my_recipe <- recipe(log_count ~ ., data = train.t) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>% # This step removes the original datetime column
+  step_mutate(season = factor(season)) %>%
+  step_mutate(holiday = factor(holiday)) %>%
+  step_mutate(workingday = factor(workingday)) %>%
+  
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) #make mean 0, sd = 1 so everything is on the same scale
+
+# penalized regression
+preg_model <- linear_reg(penalty = tune(),
+                         mixture = tune()) %>%
+  set_engine("glmnet")
+
+## set workflow
+preg_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(preg_model)
+
+
+# Grid of values to tune over
+L = 5 # number of penalties and mixure
+K = 5 # number of folds
+grid_of_tuning_params <- grid_regular(penalty(),
+                                      mixture(),
+                                      levels = L)
+
+folds <- vfold_cv(train.t, v = K, repeats = 1)
+
+# Run the CV
+CV_results <- preg_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+# Plot Result
+
+# Fine Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- preg_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train.t)
+
+# Predict
+mypreds.tune <- exp(predict(final_wf, new_data = test))
+
+# Format the Predictions for Submission to Kaggle
+kaggle.plr.tune <- mypreds.tune %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables4
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)5
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)6
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
+
+vroom_write(x=kaggle.plr.tune, file="./kaggle_plr_tune.csv", delim=",")
+
+
+
+#### Regression Trees
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Data Cleaning
+train.t <- train |>
+  select(-c(registered, casual)) |>
+  mutate(
+    log_count = log(count)
+  ) |>
+  select(-count)
+
+# create the model
+tree_mod <- decision_tree(
+  tree_depth = tune(),
+  cost_complexity = tune(),
+  min_n = tune()) %>% # type of model
+  set_engine("rpart") %>%
+  set_mode("regression")
+
+# recipe
+my_recipe <- recipe(log_count ~ ., data = train.t) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>% # This step removes the original datetime column
+  step_mutate(season = factor(season)) %>%
+  step_mutate(holiday = factor(holiday)) %>%
+  step_mutate(workingday = factor(workingday)) %>%
+  
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) #make mean 0, sd = 1 so everything is on the same scale
+
+
+## set workflow
+dec_tree_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(tree_mod)
+
+
+# Grid of values to tune over
+L = 5 # number of penalties and mixure
+K = 5 # number of folds
+grid_of_tuning_params <- grid_regular(tree_depth(),
+                                      cost_complexity(),
+                                      min_n(),
+                                      levels = L)
+
+folds <- vfold_cv(train.t, v = K, repeats = 1)
+
+# Run the CV
+CV_results <- dec_tree_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+# Plot Result
+
+# Fine Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- dec_tree_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train.t)
+
+# Predict
+mypreds.tune <- exp(predict(final_wf, new_data = test))
+
+# Format the Predictions for Submission to Kaggle
+kaggle.tree.tune <- mypreds.tune %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables4
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)5
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)6
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
+
+vroom_write(x=kaggle.tree.tune, file="./kaggle_tree_tune.csv", delim=",")
+
+
+
+#### Random Forest
+library(tidymodels)
+library(vroom)
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Data Cleaning
+train.t <- train |>
+  select(-c(registered, casual)) |>
+  mutate(
+    log_count = log(count)
+  ) |>
+  select(-count)
+
+forest_mod <- rand_forest(mtry = tune(),
+                      min_n = tune(),
+                      trees = 1000) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+
+# recipe
+my_recipe <- recipe(log_count ~ ., data = train.t) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>% # This step removes the original datetime column
+  step_mutate(season = factor(season)) %>%
+  step_mutate(holiday = factor(holiday)) %>%
+  step_mutate(workingday = factor(workingday)) %>%
+  
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) #make mean 0, sd = 1 so everything is on the same scale
+
+
+## set workflow
+forest_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(forest_mod)
+
+
+# Grid of values to tune over
+L = 5 # number of penalties and mixure
+K = 5 # number of folds
+grid_of_tuning_params <- grid_regular(mtry(range = c(1, 9)),
+                                      min_n(),
+                                      levels = L)
+
+folds <- vfold_cv(train.t, v = K, repeats = 1)
+
+# Run the CV
+CV_results <- forest_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+
+# Fine Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- forest_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train.t)
+
+# Predict
+mypreds.tune <- exp(predict(final_wf, new_data = test))
+
+# Format the Predictions for Submission to Kaggle
+kaggle.forest.tune <- mypreds.tune %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables4
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)5
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)6
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
+
+vroom_write(x=kaggle.forest.tune, file="./kaggle_forest_tune.csv", delim=",")
+
+
+#### Boosting & BART
+### make some changes with the datetime variable in the recipe
+
+library(tidymodels)
+library(vroom)
+library(bonsai)
+library(lightgbm)
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Data Cleaning
+train.t <- train |>
+  select(-c(registered, casual)) |>
+  mutate(
+    log_count = log(count)
+  ) |>
+  select(-count)
+
+bart_mod <- bart(trees = tune()) %>% # BART figures out depth and learn_rate
+  set_engine("dbarts") %>%
+  set_mode("regression")
+
+# recipe
+my_recipe <- recipe(log_count ~ ., data = train.t) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>% # This step removes the original datetime column
+  step_mutate(season = factor(season)) %>%
+  step_mutate(holiday = factor(holiday)) %>%
+  step_mutate(workingday = factor(workingday)) %>%
+  
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) #make mean 0, sd = 1 so everything is on the same scale
+
+
+## set workflow
+bart_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(bart_mod)
+
+
+# Grid of values to tune over
+L = 5 # number of penalties and mixure
+K = 5 # number of folds
+grid_of_tuning_params <- grid_regular(trees(),
+                                      levels = L)
+
+folds <- vfold_cv(train.t, v = K, repeats = 1)
+
+# Run the CV
+CV_results <- bart_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+
+# Fine Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- bart_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train.t)
+
+# Predict
+mypreds.tune <- exp(predict(final_wf, new_data = test))
+
+# Format the Predictions for Submission to Kaggle
+kaggle.bart.tune <- mypreds.tune %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables4
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)5
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)6
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
+
+vroom_write(x=kaggle.bart.tune, file="./kaggle_bart_tune.csv", delim=",")
+
+
+#### Stacking Models with H20.AI
+### make some changes with the datetime variable in the recipe
+
+library(tidymodels)
+library(vroom)
+library(agua)
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Data Cleaning
+train.t <- train |>
+  select(-c(registered, casual)) |>
+  mutate(
+    log_count = log(count)
+  ) |>
+  select(-count)
+
+
+## Initialize an h2o session
+h2o::h2o.init()
+
+
+## Define the Model
+# max_runtime_secs = how long to let h20.ai run
+# max_modles = how many models to stack
+
+auto_model <- auto_ml() %>%
+  set_engine("h2o", max_runtime_secs = 120, max_models = 100) %>%
+  set_mode("regression")
+
+
+my_recipe <- recipe(log_count ~ ., data = train.t) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>% # This step removes the original datetime column
+  step_mutate(season = factor(season)) %>%
+  step_mutate(holiday = factor(holiday)) %>%
+  step_mutate(workingday = factor(workingday)) %>%
+  
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) #make mean 0, sd = 1 so everything is on the same scale
+
+
+# Combine into Workflow
+automl_wf <- workflow() %>%
+add_recipe(my_recipe) %>%
+add_model(auto_model) %>%
+fit(data=train.t)
+
+
+# Predict
+mypreds <- exp(predict(automl_wf, new_data = test))
+
+# Format the Predictions for Submission to Kaggle
+kaggle.automl <- mypreds %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables4
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)5
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)6
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
+
+vroom_write(x=kaggle.automl, file="./kaggle_automl.csv", delim=",")
+
+
+
+
+#### Final Bike & Share (BART)
+library(tidymodels)
+library(vroom)
+library(bonsai)
+library(lightgbm)
+
+train <- vroom("train.csv")
+test <- vroom("test.csv")
+
+# Data Cleaning
+train.t <- train |>
+  select(-c(registered, casual)) |>
+  mutate(
+    log_count = log(count)
+  ) |>
+  select(-count)
+
+bart_final <- bart(trees = tune()) %>% # BART figures out depth and learn_rate
+  set_engine("dbarts") %>%
+  set_mode("regression")
+
+
+my_recipe <- recipe(log_count ~ ., data = train.t) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_time(datetime, features = c("hour")) %>%   # creates datetime_hour
+  step_mutate(hour_sin = sin(2 * pi * datetime_hour / 24)) %>%  # sine transformation
+  step_rm(datetime) %>%  # remove original datetime
+  step_mutate(season = factor(season)) %>%
+  step_mutate(holiday = factor(holiday)) %>%
+  step_mutate(workingday = factor(workingday))
+
+step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) #make mean 0, sd = 1 so everything is on the same scale
+
+
+## set workflow
+bart_final_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(bart_final)
+
+
+# Grid of values to tune over
+L = 5# number of penalties and mixure
+K = 5 # number of folds
+grid_of_tuning_params <- grid_regular(trees(),
+                                      levels = L)
+
+folds <- vfold_cv(train.t, v = K, repeats = 1)
+
+# Run the CV (cross validation)
+CV_results <- bart_final_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+
+# Fine Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- bart_final_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train.t)
+
+# Predict
+mypreds.tune <- exp(predict(final_wf, new_data = test))
+
+# Format the Predictions for Submission to Kaggle
+kaggle.bart.final <- mypreds.tune %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables4
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)5
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)6
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle7
+
+vroom_write(x=kaggle.bart.final, file="./kaggle_bart_final.csv", delim=",")
